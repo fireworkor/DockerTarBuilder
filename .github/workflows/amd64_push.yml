@@ -1,0 +1,67 @@
+name: x86-64 Pull and Save Docker Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      docker_images:
+        description: '请填写docker镜像名称 多个用英文逗号分开'
+        required: true
+        default: 'docker.io/library/rust:1.82-bookworm'  # 设置默认的 Docker 镜像列表
+
+jobs:
+  pull_and_package:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Clean up Docker to free space
+      run: |
+          docker system prune -a -f
+          docker volume prune -f
+
+    # ---------- 新增：登录到自定义 Docker Registry ----------
+    - name: Login to Docker Registry
+      uses: docker/login-action@v3
+      with:
+        registry: dockerhub.web.fireworkor.top:10443
+        username: ${{ secrets.REGISTRY_USERNAME }}
+        password: ${{ secrets.REGISTRY_PASSWORD }}
+
+    # ---------- 修改：拉取、打标签、推送、同时保存 tar ----------
+    - name: Pull, Tag, Push and Package Docker Images
+      run: |
+        images="${{ github.event.inputs.docker_images }}"
+        IFS=',' read -r -a image_array <<< "$images"
+        for image in "${image_array[@]}"; do
+          # 拉取 amd64 架构镜像
+          echo "Pulling ${image} (linux/amd64)"
+          docker pull "${image}" --platform "linux/amd64"
+
+          # 为目标 Registry 打新标签
+          new_image="dockerhub.web.fireworkor.top:10443/${image}"
+          echo "Tagging ${image} as ${new_image}"
+          docker tag "${image}" "${new_image}"
+
+          # 推送到自建 Registry
+          echo "Pushing ${new_image}"
+          docker push "${new_image}"
+
+          # 保存原始镜像为 tar（用于后续打包 artifact）
+          docker save "${image}" -o "${image//\//_}-amd64.tar"
+        done
+
+    - name: Compress the TAR files
+      run: tar -czf x86-64-images.tar.gz *-amd64.tar
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: docker-images-tar
+        path: x86-64-images.tar.gz
+        retention-days: 1
+
+    - name: Clean up intermediate files
+      run: |
+        rm *-amd64.tar
